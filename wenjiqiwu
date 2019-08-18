@@ -1,0 +1,132 @@
+#include <Adafruit_NeoPixel.h>
+#include <IRremote.h>
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include <EEPROM.h>
+#include "audio.h"                //引用头文件
+
+#define Light_PIN A0              //定义光感的串口
+#define music_num_MAX 6           //定义歌曲的最大数量
+#define EEPROM_write(address, p) {int i = 0; byte *pp = (byte*)&(p);for(; i < sizeof(p); i++) EEPROM.write(address+i, pp[i]);}
+#define EEPROM_read(address, p)  {int i = 0; byte *pp = (byte*)&(p);for(; i < sizeof(p); i++) pp[i]=EEPROM.read(address+i);}
+
+int RECV_PIN = 10;               //定义红外接收器的串口
+IRrecv irrecv(RECV_PIN);        //定义IRrecv对象来接收红外线信号
+decode_results results;        //解码结果放在decode_results构造的对象results里
+
+int a = 0;                       //定义一个整型变量来判断是白天还是晚上
+int music_num = 1;               //歌曲的序号
+int music_vol = 20;              //歌曲的音量
+int sensorValue;                 //存储光照强度
+int light = 0;                   //定义一个整型变量light使喇叭能在特定光照强度下响起
+boolean music_status = false;    //歌曲播放状态
+
+struct config_type
+{
+  int EEPROM_music_num;         //歌曲的数目
+  int EEPROM_music_vol;         //歌曲的音量
+};
+
+void eeprom_WRITE()
+{
+  config_type config;           // 定义结构变量config，并定义config的内容
+  config.EEPROM_music_num = music_num;
+  config.EEPROM_music_vol = music_vol;
+  EEPROM_write(0, config);      // 变量config存储到EEPROM，地址0写入
+}
+
+void eeprom_READ()
+{
+  config_type config_readback;
+  EEPROM_read(0, config_readback);
+  music_num = config_readback.EEPROM_music_num;
+}
+
+void setup()
+{
+  Serial.begin(9600);                                       //初始化串口通信，并将波特率设置为9600
+  irrecv.enableIRIn();                                       //启动红外解码
+  Serial.println("Initialisation complete.");
+  eeprom_READ();
+  audio_init(DEVICE_TF, MODE_loopOne, music_vol);            //初始化mp3模块
+}
+
+void loop()
+{
+  sensorValue = analogRead(Light_PIN);                  //光检测
+  Serial.println(sensorValue);
+  Serial.println(a);
+  if (irrecv.decode(&results))                         //解码成功，收到一组红外线信号
+  {
+    Serial.println(results.value, HEX);               // 输出红外线解码结果（十六进制）
+    if (results.value == 0x1FE10EF)                    //如果接收到特定编码
+    {
+      delay(100);
+      light = sensorValue;                             //将用户需要的光照强度赋值给light
+    }
+    irrecv.resume();                                   //接收下一个值
+  }
+  if (sensorValue >= light && a != 0)                  //如果光照强度大于light且此时是白天
+  {
+    delay(500);                                        //延迟0.5秒，意为排除偶然因素的干扰
+    if (sensorValue >= light)                          //如果光照强度依然大于light
+    {
+      delay(100);
+      audio_play();                                    //闹钟响起
+    }
+    if (results.value == 0x1FE48B7)                  //如果接收到特定编码
+    {
+      delay(100);
+      a = 0;                                         //将a置为0，意为此时是白天
+      audio_pause();                                 //闹钟停止响
+    }
+    else if (results.value == 0x1FE906F)             //如果接收到特定编码
+    {
+      music_num++;                                   //歌曲序号加1
+      if (music_num > music_num_MAX)                 //如果序号大于最大序号
+      {
+        delay(100);
+        music_num = 1;                               //将序号置为1
+      }
+      audio_choose(music_num);                       //选定要播放的音乐的序号
+      audio_play();                                  //播放音乐
+      music_status = true;
+      eeprom_WRITE();
+    }
+    else if (results.value == 0x1FEE01F)             //如果接收到特定编码
+    {
+      music_num--;                                   //歌曲序号减1
+      if (music_num < 1)                             //如果歌曲序号小于最小序号
+      {
+        delay(100);
+        music_num = music_num_MAX;                   //将歌曲序号置为最大序号
+      }
+      audio_choose(music_num);                       //选定要播放的音乐的序号
+      audio_play();                                  //播放音乐
+      music_status = true;
+      eeprom_WRITE();
+    }
+    else if (results.value == 0x1FE807F)             //如果接收到特定编码
+    {
+      delay(100);
+      audio_pause;                                   //暂停播放
+      delay(600000);                                 //10分钟
+      audio_play();                                  //开始播放
+    }                                                //这一段代码意为10分钟的睡懒觉时间
+    irrecv.resume();                                 //接收下一个值
+  }
+  else if (sensorValue < light)                        //如果光照强度小于light
+  {
+    delay(500);                                        //延迟0.5秒，意为排除偶然因素的干扰
+    if (sensorValue < light)                           //如果光照强度依然小于light
+    {
+      delay(100);
+      a = 1;                                           //将a置为1，意为此时是晚上
+    }
+  }
+  if (a == 0)
+  {
+    audio_pause();
+  }
+  delay(100);                                         //这一段代码意为提高闹钟停止的精确度
+}
